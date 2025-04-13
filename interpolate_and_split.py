@@ -1,7 +1,7 @@
 import os
 import glob
 import random
-from random import Random
+from typing import Optional
 
 import pandas as pd
 import hashlib
@@ -13,12 +13,13 @@ import warnings
 NEGATIVE_PART = -299
 LARGEST_CHUNK = 600
 SMALLEST_CHUNK = 350
-TOTAL_REALIZATIONS = 10
+TOTAL_REALIZATIONS = 1
 
 #The filterwarnings () method is used to set warning filters, which can control the output method and level of warning information.
 warnings.filterwarnings('ignore')
 
 def get_sequence_length_distribution(test_data_filename):
+    print(os.getcwd())
     test_data = pd.read_csv(test_data_filename)
     sequence_length = 300 - test_data.isna().sum(axis=1)
     sequence_length.plot.hist(bins=300)
@@ -56,46 +57,21 @@ def create_example_plot(input_profile_filename):
     ax[1].set_xlabel('horizontal distance [feet]')
     plt.show()
 
-def remove_chunk(array, length):
-    """
-    Splits a numpy array into a chunk of the given length and the rest.
-
-    Parameters:
-    array (numpy.ndarray): The input array to split.
-    length (int): The size of the chunk to remove.
-
-    Returns:
-    tuple: A tuple containing:
-        - chunk (numpy.ndarray): The removed chunk of the specified length.
-        - rest (numpy.ndarray): The remaining part of the array.
-    """
-    if length > len(array):
-        raise ValueError("Length exceeds the size of the input array.")
-
-    print(f"Chunk len: {length}")
-
-    # Split the array
-    chunk = array[:length]
-    rest = array[length:]
-
-    return chunk, rest
-
-
-def add_chunk_to_df(df, input_array, chunk_length, file_name, initial_length):
-    position = initial_length - len(input_array)
-    chunk, shortened_array = remove_chunk(input_array, chunk_length)
-
-    # subtracting the -300th element for normalization
-    chunk -= chunk[-(LARGEST_CHUNK+NEGATIVE_PART)]
+def add_training_window(
+        df: pd.DataFrame, input_array: list, start_index: int, sequence_length: int,
+        file_name: str,
+        ):
 
     # Calculate padding with NaNs
-    padding_length = LARGEST_CHUNK - chunk_length
-    padded_array = [np.nan] * padding_length + list(chunk)
-
+    padding_length = LARGEST_CHUNK - sequence_length
+    padded_array = [np.nan] * padding_length + list(input_array[start_index:(sequence_length + start_index)])
+    # offset profile so that 0th position is zero
+    center_value = padded_array[NEGATIVE_PART*(-1)]
+    padded_array = [elem - center_value for elem in padded_array]
     # Create a row with 'geology_id' and the padded array
     # TODO compute geology_id
     # Generate an 8-digit hash
-    full_id = f"{file_name}_{str(position)}"
+    full_id = f"{file_name}_{str(start_index)}"
     hash_object = hashlib.md5(full_id.encode('utf-8'))
     hash_hex_id = f"g_{hash_object.hexdigest()[:10]}"  # Take the first 10 characters of the hash
 
@@ -104,15 +80,15 @@ def add_chunk_to_df(df, input_array, chunk_length, file_name, initial_length):
     # Append to the DataFrame
     df.loc[len(df)] = row
 
-    return shortened_array
-
-
-
 def process_folder(
-        path_to_process, output_file_name=None, data_augmentation=False, DO_PLOT = True, my_rnd=None, random_state=0
+        path_to_process: str, output_file_name: str=None, data_augmentation: bool=False,
+        sequence_stride: int=10, DO_PLOT: bool=False,
+        my_rnd: Optional[random.Random]=None, random_state: int=0,
+        full_length_ratio: float=0.5,
         ):
     if my_rnd is None:
-        my_rnd = random.Random()
+        my_rnd = random.Random(random_state)
+    random.seed(random_state)
     # Get a list of all CSV files in the current directory
     csv_files = glob.glob(f"{path_to_process}/*.csv")
     data_overview = pd.DataFrame({'data points':[], 'length in feet':[]})
@@ -145,45 +121,30 @@ def process_folder(
         # mirrow interpolated values and set origin to zero
         if data_augmentation:
             new_horizon_z_mirrowed = new_horizon_z[::-1] - new_horizon_z[-1]
-            #! TODO include mirrowed data into training data chunks!
 
         # Plot results
         if DO_PLOT:
             # Plot the original data
             ax.plot(df['VS_APPROX_adjusted'], df['HORIZON_Z_adjusted'],
-                        label=file_name)
+                        label=file_name, color='k')
             if data_augmentation:
                 ax.plot(new_vs_grid, new_horizon_z_mirrowed,
-                    label=file_name)
+                    label=file_name, linestyle=':', color='k')
+        # iterate over profile and mirrowed profile
+        for profile in [new_horizon_z, new_horizon_z_mirrowed]:
+            # iterate over start of training window
+            for start_index in np.arange(0, len(profile) - LARGEST_CHUNK, sequence_stride):
+                # initialize sequence length
+                sequence_length = LARGEST_CHUNK
+                # decide if input length is maximum length based on random
+                if random.random() > full_length_ratio:
+                    # get sequence length from random integer
+                    sequence_length = random.randint(SMALLEST_CHUNK, LARGEST_CHUNK)
+                add_training_window(
+                    df=total_df, input_array=profile, start_index=start_index,
+                    sequence_length=sequence_length, file_name=file_name,
+                )
 
-            # # Plot the interpolated data
-            # plt.plot(new_vs_grid, new_horizon_z,
-            #          label='Interpolated Data', zorder=2)
-
-        remaining_array = new_horizon_z
-
-        # take about half in large chunks
-        array_len = len(remaining_array)
-        initial_len = array_len
-        total_large = array_len // LARGEST_CHUNK // 2
-        for i in range(total_large):
-            remaining_array = add_chunk_to_df(total_df, remaining_array, LARGEST_CHUNK, file_name, initial_len)
-
-        # for the remaining part (as long as chung is longer than largest chunk times 2.5)
-        # take smaller chunks by randomely selecting from smallest possible to largest possible length
-        while len(remaining_array) >= LARGEST_CHUNK*2.5:
-            chunk_len = my_rnd.randint(SMALLEST_CHUNK, LARGEST_CHUNK)
-            remaining_array = add_chunk_to_df(total_df, remaining_array, chunk_len, file_name, initial_len)
-
-        array_len = len(remaining_array)
-        remaining_len = array_len // 3
-        for i in range(2):
-            remaining_array = add_chunk_to_df(total_df, remaining_array, remaining_len, file_name, initial_len)
-
-        remaining_array = add_chunk_to_df(total_df, remaining_array, len(remaining_array), file_name, initial_len)
-        # print(remaining_array)
-
-        # now we filled in the row
     if DO_PLOT:
         ax.set_xlabel('horizontal distance from origin [feet]')
         ax.set_ylabel('vertical distance from origin [feet]')
@@ -217,7 +178,11 @@ if __name__ == "__main__":
     create_example_plot(os.path.join("data","train_raw", "3c9b6dea.csv"))
     process_folder(
         path_to_process=r"data\train_raw",
-        output_file_name=r"data\train_augmented.csv", data_augmentation=True, my_rnd=my_rnd
+        output_file_name=r"data\train_augmented.csv",
+        data_augmentation=True, 
+        sequence_stride=100,
+        my_rnd=my_rnd, random_state=42,
+        full_length_ratio=full_length_ratio,
         )
 
 
