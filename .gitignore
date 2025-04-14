@@ -1,1 +1,2 @@
-data\train_augmented.csv
+train_augmented.csv
+__pycache__*
