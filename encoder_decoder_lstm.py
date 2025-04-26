@@ -10,7 +10,8 @@ from tqdm import trange
 import torch
 import torch.nn as nn
 from torch import optim
-import torch.nn.functional as F
+import matplotlib.pyplot as plt
+
 
 
 class lstm_encoder(nn.Module):
@@ -31,8 +32,9 @@ class lstm_encoder(nn.Module):
         self.num_layers = num_layers
 
         # define LSTM layer
-        self.lstm = nn.LSTM(input_size = input_size, hidden_size = hidden_size,
-                            num_layers = num_layers)
+        self.lstm = nn.LSTM(
+            input_size=input_size, hidden_size=hidden_size, num_layers=num_layers
+            )
 
     def forward(self, x_input):
         
@@ -42,8 +44,8 @@ class lstm_encoder(nn.Module):
         :                              hidden gives the hidden state and cell state for the last
         :                              element in the sequence 
         '''
-        
-        lstm_out, self.hidden = self.lstm(x_input.view(x_input.shape[0], x_input.shape[1], self.input_size))
+
+        lstm_out, self.hidden = self.lstm(x_input)
         
         return lstm_out, self.hidden     
     
@@ -76,8 +78,8 @@ class lstm_decoder(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
 
-        self.lstm = nn.LSTM(input_size = input_size, hidden_size = hidden_size,
-                            num_layers = num_layers)
+        self.lstm = nn.LSTM(
+            input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
         self.linear = nn.Linear(hidden_size, input_size)           
 
     def forward(self, x_input, encoder_hidden_states):
@@ -111,11 +113,15 @@ class lstm_seq2seq(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
 
-        self.encoder = lstm_encoder(input_size = input_size, hidden_size = hidden_size)
-        self.decoder = lstm_decoder(input_size = input_size, hidden_size = hidden_size)
+        self.encoder = lstm_encoder(input_size=input_size, hidden_size=hidden_size)
+        self.decoder = lstm_decoder(input_size=input_size, hidden_size=hidden_size)
 
 
-    def train_model(self, input_tensor, target_tensor, n_epochs, target_len, batch_size, training_prediction = 'recursive', teacher_forcing_ratio = 0.5, learning_rate = 0.01, dynamic_tf = False):
+    def train_model(
+            self, input_tensor, target_tensor, n_epochs, target_len, 
+            batch_size, validation_input_tensor = None, validation_target_tensor = None,
+            training_prediction = 'recursive', teacher_forcing_ratio = 0.5,
+            learning_rate = 0.01, dynamic_tf = False):
         
         '''
         train lstm encoder-decoder
@@ -139,9 +145,10 @@ class lstm_seq2seq(nn.Module):
         '''
         
         # initialize array of losses 
-        losses = np.full(n_epochs, np.nan)
+        training_losses = []
+        validation_losses = []
 
-        optimizer = optim.Adam(self.parameters(), lr = learning_rate)
+        optimizer = optim.AdamW(self.parameters(), lr = learning_rate)
         criterion = nn.MSELoss()
 
         # calculate number of batch iterations
@@ -151,10 +158,6 @@ class lstm_seq2seq(nn.Module):
             for it in tr:
                 
                 batch_loss = 0.
-                batch_loss_tf = 0.
-                batch_loss_no_tf = 0.
-                num_tf = 0
-                num_no_tf = 0
 
                 for b in range(n_batches):
                     # select data 
@@ -171,7 +174,7 @@ class lstm_seq2seq(nn.Module):
                     optimizer.zero_grad()
 
                     # encoder outputs
-                    encoder_output, encoder_hidden = self.encoder(input_batch)
+                    _, encoder_hidden = self.encoder(input_batch)
 
                     # decoder with teacher forcing
                     decoder_input = input_batch[-1, :, :]   # shape: (batch_size, input_size)
@@ -213,7 +216,7 @@ class lstm_seq2seq(nn.Module):
                             else:
                                 decoder_input = decoder_output
 
-                    # compute the loss 
+                    # compute the loss
                     loss = criterion(outputs, target_batch)
                     batch_loss += loss.item()
                     
@@ -223,17 +226,44 @@ class lstm_seq2seq(nn.Module):
 
                 # loss for epoch 
                 batch_loss /= n_batches 
-                losses[it] = batch_loss
+                training_losses.append(batch_loss)
 
                 # dynamic teacher forcing
                 if dynamic_tf and teacher_forcing_ratio > 0:
-                    teacher_forcing_ratio = teacher_forcing_ratio - 0.02 
+                    teacher_forcing_ratio = teacher_forcing_ratio - 1/n_epochs * teacher_forcing_ratio
 
                 # progress bar 
                 tr.set_postfix(loss="{0:.3f}".format(batch_loss))
-                    
-        return losses
 
+                # keep track of validation error, especially relevant for early stoppings
+                if validation_input_tensor.nelement() > 0 \
+                        and validation_target_tensor.nelement() > 0:
+                    y_validation = torch.zeros(
+                        target_len, validation_input_tensor.shape[1], validation_input_tensor.shape[2]
+                        )
+                    for forecast_index in range(validation_input_tensor.shape[1]):
+                        prediction = self.predict(
+                            validation_input_tensor[:,forecast_index,:], target_len=validation_target_tensor.shape[0]
+                            )
+                        y_validation[:, forecast_index, :] = torch.from_numpy(prediction)
+                    validation_loss = criterion(y_validation, validation_target_tensor)
+                    validation_losses.append(validation_loss)
+                    # early stopping
+                    if it >= 1:
+                        if validation_losses[it] >= validation_losses[it - 1]:
+                            break
+
+        fig, ax = plt.subplots()
+        ax.plot(np.arange(len(training_losses)), training_losses, label='training')
+        ax.plot(np.arange(len(validation_losses)), validation_losses, label='validation')
+        ax.legend()
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        plt.savefig(r'plots/losses.png')
+        plt.close() 
+                    
+        return training_losses
+    
     def predict(self, input_tensor, target_len):
         
         '''
@@ -244,7 +274,7 @@ class lstm_seq2seq(nn.Module):
 
         # encode input_tensor
         input_tensor = input_tensor.unsqueeze(1)     # add in batch size of 1
-        encoder_output, encoder_hidden = self.encoder(input_tensor)
+        _, encoder_hidden = self.encoder(input_tensor)
 
         # initialize tensor for predictions
         outputs = torch.zeros(target_len, input_tensor.shape[2])

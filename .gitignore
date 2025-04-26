@@ -1,2 +1,4 @@
 train_augmented.csv
+plots
+submission.csv
 __pycache__*
