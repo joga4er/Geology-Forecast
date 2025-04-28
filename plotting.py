@@ -5,8 +5,11 @@
 
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
-def plot_train_test_results(lstm_model, Xtrain, Ytrain, Xtest, Ytest, num_rows = 4):
+def plot_train_test_results(
+      lstm_model, Xtrain, Ytrain, Xtest, Ytest, description='', num_rows = 4
+      ):
   '''
   plot examples of the lstm encoder-decoder evaluated on the training/test data
   
@@ -35,6 +38,7 @@ def plot_train_test_results(lstm_model, Xtrain, Ytrain, Xtest, Ytest, num_rows =
       # train set
       X_train_plt = Xtrain[:, ii, :]
       Y_train_pred = lstm_model.predict(X_train_plt, target_len = ow)
+      Y_train_pred = Y_train_pred.detach().numpy()
 
       ax[ii, 0].plot(np.arange(0, iw), Xtrain[:, ii, 0], 'k', linewidth = 2, label = 'Input')
       ax[ii, 0].plot(np.arange(iw - 1, iw + ow), np.concatenate([[Xtrain[-1, ii, 0]], Ytrain[:, ii, 0]]),
@@ -48,6 +52,7 @@ def plot_train_test_results(lstm_model, Xtrain, Ytrain, Xtest, Ytest, num_rows =
       # test set
       X_test_plt = Xtest[:, ii, :]
       Y_test_pred = lstm_model.predict(X_test_plt, target_len = ow)
+      Y_test_pred = Y_test_pred.detach().numpy()
       ax[ii, 1].plot(np.arange(0, iw), Xtest[:, ii, 0], 'k', linewidth = 2, label = 'Input')
       ax[ii, 1].plot(np.arange(iw - 1, iw + ow), np.concatenate([[Xtest[-1, ii, 0]], Ytest[:, ii, 0]]),
                      color = (0.2, 0.42, 0.72), linewidth = 2, label = 'Target')
@@ -63,10 +68,12 @@ def plot_train_test_results(lstm_model, Xtrain, Ytrain, Xtest, Ytest, num_rows =
         ax[ii, 1].legend(bbox_to_anchor=(1, 1))
         ax[ii, 1].set_title('Test')
 
+  plotname = f'predictions_{description}.png'
+
   plt.suptitle('LSTM Encoder-Decoder Predictions', x = 0.445, y = 1.)
   plt.tight_layout()
   plt.subplots_adjust(top = 0.95)
-  plt.savefig(r'plots/predictions.png')
+  plt.savefig(os.path.join("plots", plotname))
   plt.close() 
       
   return 

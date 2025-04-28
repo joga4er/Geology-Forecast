@@ -1,4 +1,6 @@
 train_augmented.csv
 plots
 submission.csv
+grid_search.csv
+model
 __pycache__*

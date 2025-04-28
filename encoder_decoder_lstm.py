@@ -11,8 +11,7 @@ import torch
 import torch.nn as nn
 from torch import optim
 import matplotlib.pyplot as plt
-
-
+import os
 
 class lstm_encoder(nn.Module):
     ''' Encodes time-series sequence '''
@@ -33,7 +32,8 @@ class lstm_encoder(nn.Module):
 
         # define LSTM layer
         self.lstm = nn.LSTM(
-            input_size=input_size, hidden_size=hidden_size, num_layers=num_layers
+            input_size=input_size, hidden_size=hidden_size, num_layers=num_layers,
+            dropout=0.2,
             )
 
     def forward(self, x_input):
@@ -79,7 +79,9 @@ class lstm_decoder(nn.Module):
         self.num_layers = num_layers
 
         self.lstm = nn.LSTM(
-            input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
+            input_size=input_size, hidden_size=hidden_size, num_layers=num_layers,
+            dropout=0.2,
+            )
         self.linear = nn.Linear(hidden_size, input_size)           
 
     def forward(self, x_input, encoder_hidden_states):
@@ -101,7 +103,7 @@ class lstm_decoder(nn.Module):
 class lstm_seq2seq(nn.Module):
     ''' train LSTM encoder-decoder and make predictions '''
     
-    def __init__(self, input_size, hidden_size):
+    def __init__(self, input_size, hidden_size, num_layers):
 
         '''
         : param input_size:     the number of expected features in the input X
@@ -112,16 +114,16 @@ class lstm_seq2seq(nn.Module):
 
         self.input_size = input_size
         self.hidden_size = hidden_size
+        self.num_layers = num_layers
 
-        self.encoder = lstm_encoder(input_size=input_size, hidden_size=hidden_size)
-        self.decoder = lstm_decoder(input_size=input_size, hidden_size=hidden_size)
-
+        self.encoder = lstm_encoder(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
+        self.decoder = lstm_decoder(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
 
     def train_model(
             self, input_tensor, target_tensor, n_epochs, target_len, 
             batch_size, validation_input_tensor = None, validation_target_tensor = None,
-            training_prediction = 'recursive', teacher_forcing_ratio = 0.5,
-            learning_rate = 0.01, dynamic_tf = False):
+            description = '', training_prediction = 'recursive', teacher_forcing_ratio = 0.5,
+            learning_rate = 1e-3, dynamic_tf = False):
         
         '''
         train lstm encoder-decoder
@@ -148,7 +150,7 @@ class lstm_seq2seq(nn.Module):
         training_losses = []
         validation_losses = []
 
-        optimizer = optim.AdamW(self.parameters(), lr = learning_rate)
+        optimizer = optim.AdamW(self.parameters(), lr=learning_rate)
         criterion = nn.MSELoss()
 
         # calculate number of batch iterations
@@ -230,39 +232,52 @@ class lstm_seq2seq(nn.Module):
 
                 # dynamic teacher forcing
                 if dynamic_tf and teacher_forcing_ratio > 0:
-                    teacher_forcing_ratio = teacher_forcing_ratio - 1/n_epochs * teacher_forcing_ratio
+                    teacher_forcing_ratio = teacher_forcing_ratio - 0.1
+                    if teacher_forcing_ratio < 0:
+                        teacher_forcing_ratio = 0
 
                 # progress bar 
                 tr.set_postfix(loss="{0:.3f}".format(batch_loss))
 
                 # keep track of validation error, especially relevant for early stoppings
+                validation_loss = 0.0
                 if validation_input_tensor.nelement() > 0 \
                         and validation_target_tensor.nelement() > 0:
-                    y_validation = torch.zeros(
-                        target_len, validation_input_tensor.shape[1], validation_input_tensor.shape[2]
-                        )
                     for forecast_index in range(validation_input_tensor.shape[1]):
                         prediction = self.predict(
                             validation_input_tensor[:,forecast_index,:], target_len=validation_target_tensor.shape[0]
                             )
-                        y_validation[:, forecast_index, :] = torch.from_numpy(prediction)
-                    validation_loss = criterion(y_validation, validation_target_tensor)
-                    validation_losses.append(validation_loss)
+                        prediction_loss = criterion(prediction, validation_target_tensor[:,forecast_index,:])
+                        validation_loss += prediction_loss.item()
+                    validation_losses.append(validation_loss/forecast_index)
                     # early stopping
-                    if it >= 1:
+                    if it == 0:
+                        torch.save(
+                            self.state_dict(), os.path.join('model', description)
+                            )
+                    elif it >= 1:
                         if validation_losses[it] >= validation_losses[it - 1]:
+                            self.load_state_dict(torch.load(
+                                os.path.join('model', description), weights_only=True)
+                                )
                             break
-
+                        else:
+                            torch.save(
+                                self.state_dict(), os.path.join('model', description)
+                            )
+                else:
+                    validation_losses.append(np.nan)
+        plotname = f'losses_{description}.png'
         fig, ax = plt.subplots()
         ax.plot(np.arange(len(training_losses)), training_losses, label='training')
         ax.plot(np.arange(len(validation_losses)), validation_losses, label='validation')
         ax.legend()
         ax.set_xlabel('Epoch')
         ax.set_ylabel('Loss')
-        plt.savefig(r'plots/losses.png')
+        plt.savefig(os.path.join('plots', plotname))
         plt.close() 
                     
-        return training_losses
+        return training_losses, validation_losses, it
     
     def predict(self, input_tensor, target_len):
         
@@ -287,7 +302,5 @@ class lstm_seq2seq(nn.Module):
             decoder_output, decoder_hidden = self.decoder(decoder_input, decoder_hidden)
             outputs[t] = decoder_output.squeeze(0)
             decoder_input = decoder_output
-            
-        np_outputs = outputs.detach().numpy()
         
-        return np_outputs
+        return outputs
