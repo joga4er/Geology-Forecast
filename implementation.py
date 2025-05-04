@@ -41,36 +41,36 @@ grid_search = pd.DataFrame({
 })
 index = 0
 
-for hidden_size in [4, 8, 12, 16, 32]:
-    for num_layers in [1, 2, 3]:
-        for batch_size in [50, 100, 200]:
+# initialize device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+for hidden_size in [8, 12, 16, 24, 32]:
+    for num_layers in [2, 3]:
+        for batch_size in [100, 200]:
             step_identifier = f'layers_{num_layers}_weights_{hidden_size}_batchsize_{batch_size}'
 
             # initialize model
-            model = lstm_seq2seq(input_size=1, hidden_size=8, num_layers=2)
+            model = lstm_seq2seq(input_size=1, hidden_size=hidden_size, num_layers=num_layers).to(device)
             # specify model parameters and train
             train_losses, val_losses, epochs = model.train_model(
-                x_train, y_train, n_epochs=10, target_len=forecast_sequence_length, batch_size=100,
+                x_train, y_train, device, n_epochs=10, target_len=forecast_sequence_length, batch_size=100,
                 validation_input_tensor=x_validation, validation_target_tensor=y_validation,
-                description=step_identifier, training_prediction='mixed_teacher_forcing', teacher_forcing_ratio=1.0, 
+                description=step_identifier, training_prediction='mixed_teacher_forcing', teacher_forcing_ratio=0.6, 
                 learning_rate=1e-3, dynamic_tf = True
                 )
             print(f"{step_identifier}, {epochs}, {train_losses[-2]}, {val_losses[-2]}")
             grid_search.loc[index,:] = [
                 hidden_size, num_layers, batch_size, epochs, train_losses[-2], val_losses[-2]
             ]
-
+            index += 1
             # plot predictions on train/test data
             plot_train_test_results(
                 model, x_train, y_train, x_validation, y_validation, description=step_identifier
                 )
-            make_test_prediction(model)
-grid_search.to_csv(os.path.join('data', 'grid_search.csv'))
+    grid_search.to_csv(os.path.join('data', 'grid_search' + str(hidden_size) + '.csv'))
 
 #!TODO
-# implement everything with subset of data (faster)!
-# early stoppings: save previous model.
-# ensure test prediction works.
+# try probabilistic linear layer instead
 # parameter studies:
 # batch size, number of layers, length of hidden state, learning rate?, teacher_forcing?
 # skip zeros as end of sequence? (very bad input for decoder lstm)

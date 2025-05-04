@@ -1,5 +1,6 @@
 train_augmented.csv
 plots
+data
 submission.csv
 grid_search.csv
 model

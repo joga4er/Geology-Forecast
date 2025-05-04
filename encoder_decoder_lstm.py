@@ -13,6 +13,68 @@ from torch import optim
 import matplotlib.pyplot as plt
 import os
 
+class probabilistic_linear_layer(nn.Module):
+    """
+    source: https://medium.com/@pumplerod/probabilistic-neural-network-with-pytorch-11ec04479f67
+    """
+    def __init__(
+            self, in_features, out_features, bias=True, 
+            distribution='uniform', init_type='fan_in',
+            device=None, dtype=torch.float32,**kwargs):
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super().__init__()
+        #
+        # epsilon added to 'var' so that scale is always > 0 or that high > low
+        self.eps = torch.tensor( [1e-6])
+        self.distribution = distribution
+        self.in_features = in_features
+        self.out_features = out_features
+        assert self.distribution.upper() in ['UNIFORM', 'NORMAL'], f"Distribution must be one of: ['uniform', 'normal']. Not: {self.distribution}"
+        
+        if init_type.upper()=='FAN_OUT':
+            kaiming_scale = torch.Tensor([np.sqrt(6 / out_features)]).type( torch.float32)
+        else:
+            kaiming_scale = torch.Tensor([np.sqrt(6 / in_features)]).type( torch.float32)
+                                        
+        self.w_val = torch.nn.parameter.Parameter( torch.randn( (out_features, in_features), **factory_kwargs) * kaiming_scale, requires_grad=True)
+        self.w_var = torch.nn.parameter.Parameter( torch.ones_like( self.w_val, **factory_kwargs) * kaiming_scale, requires_grad=True)
+        
+        if bias:
+            self.b_val = torch.nn.parameter.Parameter( torch.randn( (out_features), **factory_kwargs) * kaiming_scale, requires_grad=True)
+            self.b_var = torch.nn.parameter.Parameter( torch.ones_like( self.b_val, **factory_kwargs) * kaiming_scale, requires_grad=True)
+        else:
+            self.b_val = self.register_parameter( 'b_val', None)
+            self.b_var = self.register_parameter( 'b_var', None)
+
+    def forward(self, x: torch.Tensor):
+        #
+        # We draw a new set of weight/bias each time the forward call is made.
+        #   - I am using torch.abs() and a small epsilon in order to insure
+        #     scale is always positive or that high > low.  There may be a
+        #     much better way to go about this.
+        if self.distribution.upper() == 'UNIFORM':
+            weight = torch.distributions.Uniform( low=self.w_val-torch.abs( self.w_var), high=self.w_val+torch.abs(self.w_var)+self.eps.to( x.device)).rsample()
+            bias = torch.distributions.Uniform( low=self.b_val-torch.abs(self.b_var), high=self.b_val+torch.abs(self.b_var)+self.eps.to( x.device)).rsample() if self.b_val is not None else 0.0
+        elif self.distribution.upper() == 'NORMAL':
+            weight = torch.distributions.Normal( loc=self.w_val, scale=torch.abs(self.w_var)+self.eps.to( x.device)).rsample()
+            bias = torch.distributions.Normal( loc=self.b_val, scale=torch.abs(self.b_var)+self.eps.to( x.device)).rsample() if self.b_val is not None else 0.0
+
+        return x@weight.T + bias
+    
+    #
+    # Provide a little more information when this instance is printed
+    def extra_repr(self) -> str:
+        bias = self.b_val is not None
+        return ' in_features={}, out_features={}, bias={}, prob_distribution={}, device={}'.format(
+            self.in_features, self.out_features, bias, self.distribution.upper(), self.device
+        )
+
+    #
+    # So that we can determine which device this is set to
+    @property
+    def device(self):
+        return next(self.parameters()).device
+
 class lstm_encoder(nn.Module):
     ''' Encodes time-series sequence '''
 
@@ -33,7 +95,7 @@ class lstm_encoder(nn.Module):
         # define LSTM layer
         self.lstm = nn.LSTM(
             input_size=input_size, hidden_size=hidden_size, num_layers=num_layers,
-            dropout=0.2,
+            dropout=0.1,
             )
 
     def forward(self, x_input):
@@ -49,7 +111,7 @@ class lstm_encoder(nn.Module):
         
         return lstm_out, self.hidden     
     
-    def init_hidden(self, batch_size):
+    def init_hidden(self, batch_size, device):
         
         '''
         initialize hidden state
@@ -57,8 +119,8 @@ class lstm_encoder(nn.Module):
         : return:              zeroed hidden state and cell state 
         '''
         
-        return (torch.zeros(self.num_layers, batch_size, self.hidden_size),
-                torch.zeros(self.num_layers, batch_size, self.hidden_size))
+        return (torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device),
+                torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device))
 
 
 class lstm_decoder(nn.Module):
@@ -80,9 +142,12 @@ class lstm_decoder(nn.Module):
 
         self.lstm = nn.LSTM(
             input_size=input_size, hidden_size=hidden_size, num_layers=num_layers,
-            dropout=0.2,
+            dropout=0.1,
             )
-        self.linear = nn.Linear(hidden_size, input_size)           
+        # self.linear = nn.Linear(hidden_size, input_size)
+        self.linear = probabilistic_linear_layer(
+            in_features=hidden_size, out_features=1, bias=True, distribution='normal'
+        )           
 
     def forward(self, x_input, encoder_hidden_states):
         
@@ -120,9 +185,9 @@ class lstm_seq2seq(nn.Module):
         self.decoder = lstm_decoder(input_size=input_size, hidden_size=hidden_size, num_layers=num_layers)
 
     def train_model(
-            self, input_tensor, target_tensor, n_epochs, target_len, 
+            self, input_tensor, target_tensor, device, n_epochs, target_len, 
             batch_size, validation_input_tensor = None, validation_target_tensor = None,
-            description = '', training_prediction = 'recursive', teacher_forcing_ratio = 0.5,
+            description = '', training_prediction = 'recursive', teacher_forcing_ratio = 0.6,
             learning_rate = 1e-3, dynamic_tf = False):
         
         '''
@@ -161,16 +226,17 @@ class lstm_seq2seq(nn.Module):
                 
                 batch_loss = 0.
 
+                self.train()
                 for b in range(n_batches):
                     # select data 
-                    input_batch = input_tensor[:, b: b + batch_size, :]
-                    target_batch = target_tensor[:, b: b + batch_size, :]
+                    input_batch = input_tensor[:, b: b + batch_size, :].to(device)
+                    target_batch = target_tensor[:, b: b + batch_size, :].to(device)
 
                     # outputs tensor
                     outputs = torch.zeros(target_len, batch_size, input_batch.shape[2])
 
                     # initialize hidden state
-                    encoder_hidden = self.encoder.init_hidden(batch_size)
+                    encoder_hidden = self.encoder.init_hidden(batch_size, device=device)
 
                     # zero the gradient
                     optimizer.zero_grad()
@@ -250,12 +316,11 @@ class lstm_seq2seq(nn.Module):
                         prediction_loss = criterion(prediction, validation_target_tensor[:,forecast_index,:])
                         validation_loss += prediction_loss.item()
                     validation_losses.append(validation_loss/forecast_index)
-                    # early stopping
-                    if it == 0:
+                    if it == 4:
                         torch.save(
                             self.state_dict(), os.path.join('model', description)
                             )
-                    elif it >= 1:
+                    if it > 4: # early stoppings after 5 epochs
                         if validation_losses[it] >= validation_losses[it - 1]:
                             self.load_state_dict(torch.load(
                                 os.path.join('model', description), weights_only=True)
@@ -286,6 +351,8 @@ class lstm_seq2seq(nn.Module):
         : param target_len:        number of target values to predict 
         : return np_outputs:       np.array containing predicted values; prediction done recursively 
         '''
+        # change to evaluation mode -> relavant to not do dropout
+        self.eval()
 
         # encode input_tensor
         input_tensor = input_tensor.unsqueeze(1)     # add in batch size of 1
