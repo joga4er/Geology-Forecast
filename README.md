@@ -13,4 +13,4 @@ Challenge and data posted on [Kaggle]{https://www.kaggle.com/competitions/geolog
 - implementation.py: script for grid search
 - plotting.py: script to create figures of exemplary predictions
 - test_prediction.py: script to load model and create csv output for test prediction
-- evaluation_metric.py: code provided by contest authors. Modified in order to weighting of prediction error over horizontal distance
+- evaluation_metric.py: code provided by contest authors. Modified to plot weighting of prediction error over horizontal distance
