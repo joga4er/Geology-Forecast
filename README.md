@@ -1,7 +1,6 @@
 # Geology Forecast
-Probabilistic sequence to sequence models (LSTMs) to predict geological profiles from initial sequence.
+Sequence to sequence models (encoder-decoder LSTMs) to predict geological profiles from initial sequence.
 Challenge and data posted on [Kaggle]{https://www.kaggle.com/competitions/geology-forecast-challenge-open}.
-Draft version, models not implemented yet.
 
 ### data:
 - train_raw: directory, which includes raw geological profiles used for training
