@@ -9,6 +9,9 @@ Draft version, models not implemented yet.
 - sample_submission.csv: example format to submit model prediction to challenge
 
 ### code:
-- interpolate_and_split.py: original code made available form challenge. Modified to create explanatory figures and output statistics, include data augmentation (rotate each profile by 180 degree) and changed sampling of input data to expand the training data set (stride < full sequence length, sequence length randomly chosen from distribution of sequence lengths in test data)# Geology Forecast
- Source code for the prediction of geological profiles
- - evaluation_metric.py: code provided by contest authors. Modified in order to plot standard deviation of profile over horizontal distance
+- interpolate_and_split.py: original code made available form challenge. Modified to create explanatory figures and output statistics, include data augmentation (rotate each profile by 180 degree) and changed sampling of input data to expand the training data set (stride < full sequence length, sequence length randomly chosen from distribution of sequence lengths in test data)
+- encoder_decoder_lstm.py: architecture, backpropagation and training of encoder-decoder LSTM
+- implementation.py: script for grid search
+- plotting.py: script to create figures of exemplary predictions
+- test_prediction.py: script to load model and create csv output for test prediction
+- evaluation_metric.py: code provided by contest authors. Modified in order to weighting of prediction error over horizontal distance
